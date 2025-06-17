@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>FS Benchmark</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        .result { margin-top: 20px; }
+        table { border-collapse: collapse; width: 100%; max-width: 800px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+        th { background-color: #f4f4f4; }
+        .loading { color: gray; }
+        #count {
+            width: 50px
+        }
+        #size {
+            width: 100px
+        }
+    </style>
+</head>
+<body>
+
+<h1>Filesystem Test (Write & Read)</h1>
+    <input id="all" type="checkbox"><br/>
+    <input id="inmemory" type="checkbox"> InMemory<br/>
+    <input id="localstorage" type="checkbox"> LocalStorage<br/>
+    <input id="indexedDB" type="checkbox"> IndexedDB<br/>
+    <input id="opfs" type="checkbox"> OPFS<br/>
+<br/>
+
+Files count: <input id="count" min="1" type="number" value="1"><br/>
+Size: <input id="size" type="number" min="0" value="1024"> KB<br/>
+Check size  <input id="check_size" type="checkbox" checked="true"><br/><br/>
+<button id="runBtn">Run test</button>
+
+<div class="result">
+    <h2>Result</h2>
+    <table id="resultsTable">
+        <thead>
+        <tr>
+            <th>Backend</th>
+            <th>Write (ms)</th>
+            <th>Read (ms)</th>
+            <th>Info</th>
+        </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <progress id="progress" style="display:none"></progress>
+</div>
+
+<script>
+    const $ = document.querySelector.bind(document);
+    const FILENAME = 'test.txt';
+    let localStorageFreeSpace = 0
+    let FILEDATA = '';
+
+    function addResultRow(name, writeTime, readTime, info) {
+        const tbody = document.querySelector('#resultsTable tbody');
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${name}</td><td>${writeTime}</td><td>${readTime}</td><td>${info}</td>`;
+        tbody.appendChild(tr);
+    }
+
+    function testMaxMemory() {
+        let size = 1024 * 1024; // 1MB
+        let buffer = null;
+        try {
+            while(true) {
+                buffer = new Uint8Array(size);
+                size *= 2;
+            }
+        } catch(e) {
+            return size / 1024 / 1024;
+        }
+    }
+    function getObjectMB(obj) {
+        if(!obj) return 0;
+
+        let bytes = 0;
+
+        if(obj instanceof ArrayBuffer || (typeof obj === 'object' && 'buffer' in obj && obj.buffer instanceof ArrayBuffer)) {
+            bytes = obj.byteLength || obj.buffer.byteLength;
+        } else if(obj instanceof ArrayBuffer) {
+            bytes = obj.byteLength;
+        } else if(obj instanceof Blob) {
+            bytes = obj.size;
+        } else if(typeof obj == 'object') {
+            try {
+                const str = JSON.stringify(obj);
+                bytes = new TextEncoder().encode(str).byteLength;
+            } catch(e) {
+                console.warn("Невозможно определить размер объекта");
+                return 0;
+            }
+        } else if(typeof obj == 'string') {
+            bytes = new TextEncoder().encode(obj).byteLength;
+        } else {
+            bytes = 8;
+        }
+
+        const mb = bytes / (1024 * 1024);
+        return Math.round(mb * 10) / 10;
+    }
+    function getLocalStorageFreeSpace() {
+        return new Promise((resolve, reject) => {
+            const key = '__localStorageFreeSpaceTest';
+            let low = 0;
+            let high = 1024 * 1024; // start with 1mb
+
+            function tryWrite(size) {
+                try {
+                    const str = 'x'.repeat(size);
+                    localStorage.setItem(key, str);
+                    localStorage.removeItem(key);
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }
+
+            // We increase the upper limit until we reach the limit
+            const findUpperLimit = () => {
+                if(tryWrite(high)) {
+                    high *= 2;
+                    setTimeout(findUpperLimit, 0);
+                } else {
+                    low = high / 2;
+                    binarySearch();
+                }
+            };
+
+            // Binary search
+            const binarySearch = () => {
+                if(high - low <= 1024) {
+                    localStorage.removeItem(key);
+                    resolve(Math.floor(high / 1024));
+                    return;
+                }
+
+                const mid = Math.floor((low + high) / 2);
+                if(tryWrite(mid))
+                    low = mid;
+                else
+                    high = mid;
+
+                setTimeout(binarySearch, 0);
+            };
+
+            findUpperLimit();
+        });
+    }
+    getLocalStorageFreeSpace().then(e => localStorageFreeSpace = e);
+
+    async function testInMemory() {
+        const count = Math.max(1, $('#count').value);
+        const checkSize = $('#check_size').checked??false;
+        const fs = {};
+        let start;
+
+        const info = checkSize ? `Total quota: ${testMaxMemory()} MB` : '';
+
+        start = performance.now();
+        for(let i=0;i<count;i++)
+            fs[FILENAME+i] = FILEDATA;
+        const write = performance.now() - start;
+
+        start = performance.now();
+        for(let i=0;i<count;i++){
+            const data = fs[FILENAME+i];
+        }
+        const read = performance.now() - start;
+
+        return { write, read, info };
+    }
+    async function testLocalStorage() {
+        const count = Math.max(1, $('#count').value);
+        const checkSize = $('#check_size').checked??false;
+        for(let i=0;i<count;i++)
+            localStorage.removeItem(FILENAME+i);
+        
+        if(getObjectMB(FILEDATA) > 5) throw '';
+
+        const info = checkSize ? `Total quota: ${localStorageFreeSpace||await getLocalStorageFreeSpace()} MB` : '';
+
+        let start = performance.now();
+        for(let i=0;i<count;i++)
+            localStorage.setItem(FILENAME+i, FILEDATA);
+        const write = performance.now() - start;
+
+        start = performance.now();
+        for(let i=0;i<count;i++){
+            const data = localStorage.getItem(FILENAME+i);
+        }
+        const read = performance.now() - start;
+
+        for(let i=0;i<count;i++)
+            localStorage.removeItem(FILENAME+i);
+        
+        return { write, read, info };
+    }
+    async function testIndexedDB() {
+        const count = Math.max(1, $('#count').value);
+        const checkSize = $('#check_size').checked??false;
+        const DB_NAME = 'BenchmarkDB';
+        const STORE_NAME = 'files';
+
+        return new Promise((resolve) => {
+            const req = indexedDB.open(DB_NAME);
+            req.onupgradeneeded = (e) => {
+                const db = req.result;
+                if((!db.objectStoreNames.contains(STORE_NAME))) {
+                    db.createObjectStore(STORE_NAME);
+                }
+            };
+
+            req.onsuccess = (e) => {
+                const db = req.result;
+
+                const writeStart = performance.now();
+                for(let i=0;i<count;i++){
+                    const putReq = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(FILEDATA, FILENAME);
+                    putReq.onsuccess = () => {
+                        const write = performance.now() - writeStart;
+
+                        const readStart = performance.now();
+                        const getReq = db.transaction(STORE_NAME).objectStore(STORE_NAME).get(FILENAME);
+                        getReq.onsuccess = async() => {
+                            const read = performance.now() - readStart;
+                            if(i == count-1){
+                                // Size
+                                let info = '';
+                                if(checkSize){
+                                    if('estimate' in navigator.storage) {
+                                        const estimate = await navigator.storage.estimate();
+                                        const quota = estimate.quota;
+                                        const usage = estimate.usage;
+
+                                        info = `Total quota: ${(quota / (1024 * 1024)).toFixed(2)} MB<br/>Used: ${(usage / (1024 * 1024)).toFixed(2)} MB`;
+                                    } else {
+                                        info = 'No support(navigator.storage.esimate not exists)';
+                                    }
+                                }
+
+                                db.close();
+                                indexedDB.deleteDatabase(DB_NAME);
+                    
+                                resolve({ write, read, info });
+                            }
+                        };
+                    };
+                }
+            };
+        });
+    }
+    async function testOPFS() {
+        const count = Math.max(1, $('#count').value);
+        const checkSize = $('#check_size').checked??false;
+        if((!navigator.storage || !navigator.storage.getDirectory)) {
+            throw new Error('OPFS doesnt support');
+        }
+
+        const root = await navigator.storage.getDirectory();
+        const handles = [];
+
+        // Write
+        const writeStart = performance.now();
+        for(let i=0;i<count;i++){
+            const handle = await root.getFileHandle(FILENAME+i, { create: true });
+            handles.push(handle);
+            const writable = await handle.createWritable();
+            await writable.write(FILEDATA);
+            await writable.close();
+        }
+        const write = performance.now() - writeStart;
+
+        // Read
+        const readStart = performance.now();
+        for(let i=0;i<count;i++){
+            const file = await handles[i].getFile();
+            const text = await file.text();
+        }
+        const read = performance.now() - readStart;
+
+        // Size
+        let info = '';
+        if(checkSize){
+            if('estimate' in navigator.storage) {
+                const estimate = await navigator.storage.estimate();
+                const quota = estimate.quota;
+                const usage = estimate.usage;
+
+                info = `Total quota: ${(quota / (1024 * 1024)).toFixed(2)} MB<br/>Used: ${(usage / (1024 * 1024)).toFixed(2)} MB`;
+                // console.log(`Total quota: ${(quota / (1024 * 1024)).toFixed(2)} MB`);
+                // console.log(`Used: ${(usage / (1024 * 1024)).toFixed(2)} MB`);
+                // console.log(`Remaining: ${((quota - usage) / (1024 * 1024)).toFixed(2)} MB`);
+            } else {
+                info = 'Size: no support(navigator.storage.esimate not exists)';
+            }
+        }
+
+        // Erase
+        for await(const [name, handle] of root.entries()) {
+            if(handle.kind == 'file' && name.startsWith(FILENAME)) {
+                await root.removeEntry(name);
+            }
+        }
+
+        return { write, read, info };
+    }
+
+    async function test(){
+        let size = parseInt(document.getElementById('size').value ?? 1024);
+        if(isNaN(size)) {
+            alert('Size is was NaN. Selected size: 1024');
+            size = 1024;
+        }
+
+        if(size > (1024 * 500)) {
+            if(!confirm(`Are you sure you're ready for this size?`)) return;
+        }
+
+        try{
+            FILEDATA = new Uint8Array(1024 * size)//'A'.repeat(1024 * size);
+        }catch{
+        }
+    
+        $('#runBtn').disabled = true;
+        $('#progress').style.display = 'block';
+        $('#resultsTable').querySelector('tbody').innerHTML = '';
+
+        const inmemory = $('#inmemory').checked;
+        const localstorage = $('#localstorage').checked;
+        const indexedDB = $('#indexedDB').checked;
+        const opfs = $('#opfs').checked;
+    
+        try {
+            if(inmemory){
+                console.log("Testing InMemory...");
+                const mem = await testInMemory();
+                addResultRow("InMemory", mem.write.toFixed(2), mem.read.toFixed(2), mem.info);
+            }
+
+            if(localstorage) try{
+                console.log("Testing LocalStorage...");
+                const local = await testLocalStorage();
+                addResultRow("LocalStorage", local.write.toFixed(2), local.read.toFixed(2), local.info);
+            }catch(e){
+                console.error(e);
+                addResultRow("LocalStorage", '-', '-', `Error(limit ${localStorageFreeSpace}MB)`);
+            }
+
+            if(indexedDB){
+                console.log("Testing IndexedDB...");
+                const idb = await testIndexedDB();
+                addResultRow("IndexedDB", idb.write.toFixed(2), idb.read.toFixed(2), idb.info);
+            }
+
+            if(opfs) if(('storage' in navigator && 'getDirectory' in navigator.storage)) {
+                console.log("Testing OPFS...");
+                try {
+                    const opfs = await testOPFS();
+                    addResultRow("OPFS", opfs.write.toFixed(2), opfs.read.toFixed(2), opfs.info);
+                } catch(e) {
+                    console.error(e);
+                    if(location.protocol == 'file:') addResultRow("OPFS", "-", "-", "No support(file://)");
+                    else addResultRow("OPFS", "-", "-", "No support");
+                }
+            } else {
+                addResultRow("OPFS", "-", "-", "Doesn't support");
+            }
+        } finally {
+            $('#runBtn').disabled = false;
+            $('#progress').style.display = 'none';
+        }
+    }
+    $('#runBtn').addEventListener('click', test);
+
+    const fsb = ['inmemory', 'localstorage', 'indexedDB', 'opfs']
+    $('#all').addEventListener('click', () => {
+        fsb.forEach(e => $('#'+e).checked = $('#all').checked)
+    });
+    
+    function dCheckbox(e){
+        if(fsb.filter(e => !$("#"+e).checked).length == 0) $("#all").checked = true;
+        else $("#all").checked = false;
+    }
+    fsb.forEach(e => $('#'+e).addEventListener('click', dCheckbox));
+    $('#all').click();
+</script>
+
+</body>
+</html>
